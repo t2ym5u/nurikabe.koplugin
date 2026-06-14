@@ -2,6 +2,15 @@
 
 A Nurikabe plugin for [KOReader](https://github.com/koreader/koreader).
 
+
+## Screenshot
+
+*(Screenshot to be added.)*
+
+## Rules
+
+Paint cells black (river) or leave white (islands). Each number seeds an island of exactly that many white cells. All black cells must form one connected group. No 2×2 area may be entirely black. Islands must not touch orthogonally.
+
 ## Concept
 
 Nurikabe is a binary determination logic puzzle. Blacken some cells of the grid
@@ -14,7 +23,7 @@ to create a "river" (connected sea of black cells) and isolated "islands"
 4. All black cells form a single connected region.
 5. No 2×2 block of cells is entirely black.
 
-## Planned Features
+## Features
 
 - **Multiple grid sizes** — 5×5, 10×10, 15×15
 - **Three difficulty levels** — Easy, Medium, Hard
@@ -37,6 +46,7 @@ to create a "river" (connected sea of black cells) and isolated "islands"
 | New game | Tap **New game** |
 | Change grid size | Tap **Grid** |
 | Change difficulty | Tap **Diff** |
+| Show rules | Tap **Rules** |
 
 ## Why e-ink friendly?
 
