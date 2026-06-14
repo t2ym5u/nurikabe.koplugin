@@ -35,6 +35,34 @@ local DeviceScreen = Device.screen
 
 local GRID_SIZES = { 5, 10, 15 }
 
+local GAME_RULES_EN = _([[
+Nurikabe — Rules
+
+Paint some cells black (the "river") and leave others white (the "islands").
+
+Rules:
+• Each numbered white cell is the seed of an island of exactly that many white cells.
+• All black cells must form one single orthogonally connected group (the river).
+• No 2×2 area may be entirely black.
+• Islands (groups of white cells) must not touch each other orthogonally — diagonal contact is allowed.
+
+Tap a cell to toggle between white and black.
+]])
+
+local GAME_RULES_FR = [[
+Nurikabe — Règles
+
+Peignez certaines cases en noir (la "rivière") et laissez les autres en blanc (les "îles").
+
+Règles :
+• Chaque case blanche numérotée est la source d'une île de exactement ce nombre de cases blanches.
+• Toutes les cases noires doivent former un seul groupe orthogonalement connecté (la rivière).
+• Aucun carré 2×2 ne peut être entièrement noir.
+• Les îles (groupes de cases blanches) ne doivent pas se toucher orthogonalement — le contact en diagonale est autorisé.
+
+Appuyez sur une case pour basculer entre blanc et noir.
+]]
+
 local NurikabeScreen = ScreenBase:extend{}
 
 function NurikabeScreen:init()
@@ -87,7 +115,8 @@ function NurikabeScreen:buildLayout()
                   callback = function() self:openDifficultyMenu() end },
                 { id = "reveal_button", text = self:getRevealButtonText(),
                   callback = function() self:toggleSolution() end },
-                self:makeCloseButtonConfig(),
+                self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
+            self:makeCloseButtonConfig(),
             },
         },
     }
