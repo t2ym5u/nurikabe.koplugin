@@ -23,7 +23,7 @@ local Size            = require("ui/size")
 local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
-local _               = require("gettext")
+local _               = require("i18n")
 local T               = require("ffi/util").template
 
 local ScreenBase          = lrequire_common("screen_base")
@@ -46,7 +46,7 @@ Rules:
 • No 2×2 area may be entirely black.
 • Islands (groups of white cells) must not touch each other orthogonally — diagonal contact is allowed.
 
-Tap a cell to toggle between white and black.
+Tap a cell to cycle: Unknown → Black → White → Unknown. Hold to reset to Unknown.
 ]])
 
 local GAME_RULES_FR = [[
@@ -60,7 +60,7 @@ Règles :
 • Aucun carré 2×2 ne peut être entièrement noir.
 • Les îles (groupes de cases blanches) ne doivent pas se toucher orthogonalement — le contact en diagonale est autorisé.
 
-Appuyez sur une case pour basculer entre blanc et noir.
+Appuyez sur une case pour cycler : Inconnu → Noir → Blanc → Inconnu. Restez appuyé pour remettre à Inconnu.
 ]]
 
 local NurikabeScreen = ScreenBase:extend{}
@@ -132,7 +132,6 @@ function NurikabeScreen:buildLayout()
                 { text = _("Check"), callback = function() self:onCheck() end },
                 { id = "undo_button", text = _("Undo"),
                   callback = function() self:onUndo() end },
-                { text = _("Rules"), callback = function() self:showRulesHint() end },
             },
         },
     }
@@ -155,18 +154,13 @@ function NurikabeScreen:buildLayout()
             right_panel,
         }
     else
-        self.layout = VerticalGroup:new{
+        local content = VerticalGroup:new{
             align = "center",
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             board_frame,
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
         }
+        self:buildPortraitLayout(top_buttons, content, bottom_buttons)
     end
     self[1] = self.layout
     self:updateStatus()
@@ -237,19 +231,6 @@ function NurikabeScreen:toggleSolution()
         self.reveal_button:setText(self:getRevealButtonText(), self.reveal_button.width)
     end
     self:updateStatus()
-end
-
-function NurikabeScreen:showRulesHint()
-    self:showMessage(_(
-        "Nurikabe rules:\n" ..
-        "1. Each number seeds an island of exactly that many white cells.\n" ..
-        "2. Each island has exactly one number.\n" ..
-        "3. No two islands touch orthogonally.\n" ..
-        "4. All black cells form one connected region.\n" ..
-        "5. No 2\xC3\xB72 block is entirely black.\n\n" ..
-        "Tap: cycle Unknown \xE2\x86\x92 Black \xE2\x86\x92 White \xE2\x86\x92 Unknown\n" ..
-        "Hold: reset to Unknown"
-    ), 10)
 end
 
 function NurikabeScreen:openGridMenu()

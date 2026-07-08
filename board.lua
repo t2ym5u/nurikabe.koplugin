@@ -227,7 +227,6 @@ function NurikabeBoard:setCellState(r, c, state)
 end
 
 function NurikabeBoard:cycleCellState(r, c)
-    if self.clues[r][c] > 0 then return false, "clue_cell" end
     local cur  = self.user[r][c]
     local next = (cur + 1) % 3
     return self:setCellState(r, c, next)
