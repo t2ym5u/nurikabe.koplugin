@@ -3,5 +3,5 @@ return {
     name        = "nurikabe",
     fullname    = _("Nurikabe"),
     description = _("Paint the river: connect islands of numbered white cells."),
-    version     = "1.1.1",
+    version     = "1.1.2",
 }
