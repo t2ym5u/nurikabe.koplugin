@@ -116,38 +116,140 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
     end
     if placed < num_islands then return nil end
 
-    -- Grow islands
+    -- Grow islands round-robin (one cell at a time across all islands, not
+    -- one island fully grown before the next) and only accept a growth step
+    -- if it does NOT disconnect the remaining black region. The previous
+    -- version only checked connectivity once at the very end, after
+    -- committing to a full random growth pattern — that almost always cut
+    -- black into disconnected pieces (empirically ~100% of attempts at
+    -- n=10/15). Checking incrementally means a step that would disconnect
+    -- black is simply never taken, so the final check below almost always
+    -- already holds.
     local order = {}
     for i = 1, num_islands do order[i] = i end
     shuffle(order)
 
-    for _, id in ipairs(order) do
-        local island = islands[id]
-        for _ = 1, 200 do
-            if #island.cells >= island.target then break end
-            local candidates = {}
-            for _, cell in ipairs(island.cells) do
-                for _, d in ipairs(DIRS) do
-                    local nr, nc = cell[1]+d[1], cell[2]+d[2]
-                    if nr >= 1 and nr <= n and nc >= 1 and nc <= n and cell_island[nr][nc] == 0 then
-                        local ok = true
-                        for _, d2 in ipairs(DIRS) do
-                            local mr, mc = nr+d2[1], nc+d2[2]
-                            if mr >= 1 and mr <= n and mc >= 1 and mc <= n then
-                                local v = cell_island[mr][mc]
-                                if v ~= 0 and v ~= id then ok = false; break end
+    local function blackConnectedWithout(er, ec)
+        local sr, sc
+        for r = 1, n do
+            for c = 1, n do
+                if cell_island[r][c] == 0 and not (r == er and c == ec) then
+                    sr, sc = r, c; break
+                end
+            end
+            if sr then break end
+        end
+        if not sr then return true end
+        local visited = {}
+        for r = 1, n do visited[r] = {} end
+        local stack = { {sr, sc} }
+        visited[sr][sc] = true
+        local count = 1
+        while #stack > 0 do
+            local cell = table.remove(stack)
+            for _, d in ipairs(DIRS) do
+                local nr, nc = cell[1]+d[1], cell[2]+d[2]
+                if nr >= 1 and nr <= n and nc >= 1 and nc <= n
+                    and cell_island[nr][nc] == 0 and not (nr == er and nc == ec)
+                    and not visited[nr][nc] then
+                    visited[nr][nc] = true
+                    count = count + 1
+                    stack[#stack+1] = {nr, nc}
+                end
+            end
+        end
+        local total = 0
+        for r = 1, n do
+            for c = 1, n do
+                if cell_island[r][c] == 0 and not (r == er and c == ec) then
+                    total = total + 1
+                end
+            end
+        end
+        return count == total
+    end
+
+    local growing = true
+    while growing do
+        growing = false
+        for _, id in ipairs(order) do
+            local island = islands[id]
+            if #island.cells < island.target then
+                local candidates = {}
+                for _, cell in ipairs(island.cells) do
+                    for _, d in ipairs(DIRS) do
+                        local nr, nc = cell[1]+d[1], cell[2]+d[2]
+                        if nr >= 1 and nr <= n and nc >= 1 and nc <= n and cell_island[nr][nc] == 0 then
+                            local ok = true
+                            for _, d2 in ipairs(DIRS) do
+                                local mr, mc = nr+d2[1], nc+d2[2]
+                                if mr >= 1 and mr <= n and mc >= 1 and mc <= n then
+                                    local v = cell_island[mr][mc]
+                                    if v ~= 0 and v ~= id then ok = false; break end
+                                end
+                            end
+                            if ok and blackConnectedWithout(nr, nc) then
+                                candidates[#candidates+1] = {nr, nc}
                             end
                         end
-                        if ok then candidates[#candidates+1] = {nr, nc} end
+                    end
+                end
+                if #candidates > 0 then
+                    local pick = candidates[math.random(#candidates)]
+                    cell_island[pick[1]][pick[2]] = id
+                    island.cells[#island.cells+1] = pick
+                    growing = true
+                end
+            end
+        end
+    end
+    for _, id in ipairs(order) do
+        islands[id].target = #islands[id].cells
+    end
+
+    -- Repair pass: growth stopping early (islands ran out of legal moves
+    -- before reaching their target) can still leave 2x2-black violations.
+    -- Fix each by carving one cell of the block to white — connectivity-
+    -- checked the same way growth was, and only when the cell has at most
+    -- one distinct island neighbour (extend that island, or start a new
+    -- size-1 island if it has none) so this never merges two islands or
+    -- creates an illegal adjacency.
+    for r = 1, n - 1 do
+        for c = 1, n - 1 do
+            if cell_island[r][c] == 0 and cell_island[r][c+1] == 0
+                and cell_island[r+1][c] == 0 and cell_island[r+1][c+1] == 0 then
+                local block_cells = { {r,c}, {r,c+1}, {r+1,c}, {r+1,c+1} }
+                for _, pos in ipairs(block_cells) do
+                    local pr, pc = pos[1], pos[2]
+                    if blackConnectedWithout(pr, pc) then
+                        local adj_id, conflict = nil, false
+                        for _, d in ipairs(DIRS) do
+                            local nr, nc = pr+d[1], pc+d[2]
+                            if nr >= 1 and nr <= n and nc >= 1 and nc <= n and cell_island[nr][nc] > 0 then
+                                if adj_id and adj_id ~= cell_island[nr][nc] then conflict = true end
+                                adj_id = cell_island[nr][nc]
+                            end
+                        end
+                        if not conflict then
+                            if adj_id then
+                                cell_island[pr][pc] = adj_id
+                                local isl = islands[adj_id]
+                                isl.cells[#isl.cells+1] = { pr, pc }
+                                isl.target = #isl.cells
+                            else
+                                num_islands = num_islands + 1
+                                cell_island[pr][pc] = num_islands
+                                islands[num_islands] = {
+                                    id = num_islands, seed_r = pr, seed_c = pc,
+                                    cells = { { pr, pc } }, target = 1,
+                                }
+                            end
+                            break
+                        end
                     end
                 end
             end
-            if #candidates == 0 then break end
-            local pick = candidates[math.random(#candidates)]
-            cell_island[pick[1]][pick[2]] = id
-            island.cells[#island.cells+1] = pick
         end
-        island.target = #island.cells
     end
 
     local solution_black = emptyBoolGrid(n)
