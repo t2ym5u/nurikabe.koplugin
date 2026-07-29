@@ -53,6 +53,17 @@ to create a "river" (connected sea of black cells) and isolated "islands"
 Binary black/white cell states are perfectly matched to e-ink display
 characteristics. No animation or colour is required.
 
+## Known limitations
+
+At 5×5, every generated puzzle is verified to have exactly one solution.
+At 10×10 and 15×15, proving uniqueness for certain is often too
+computationally expensive within generation's time budget, since several
+islands are usually growing at once. Generation still tries to prove
+uniqueness first and only falls back when it can't within that budget, so
+a small fraction of puzzles at those sizes may ship without a proven
+unique solution (still fully valid and completable, just not guaranteed
+to be the only possible tiling of the clues).
+
 ## License
 
 GPL-3.0
