@@ -27,7 +27,7 @@ local NurikabeBoard = lrequire("board")
 
 local C_BG       = Blitbuffer.COLOR_WHITE
 local C_BLACK_BG = Blitbuffer.COLOR_BLACK
-local C_WRONG_BG = Blitbuffer.COLOR_GRAY_A
+local C_WRONG_BG = Blitbuffer.COLOR_GRAY
 local C_WHITE_BG = Blitbuffer.COLOR_GRAY_E
 local C_LINE     = Blitbuffer.COLOR_BLACK
 local C_NUM_DARK = Blitbuffer.COLOR_BLACK
