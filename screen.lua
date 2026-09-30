@@ -121,6 +121,7 @@ function NurikabeScreen:buildLayout()
         buttons = {
             {
                 { text = _("Check"), callback = function() self:onCheck() end },
+                { text = _("Hint"), callback = function() self:onHint() end },
                 { id = "undo_button", text = _("Undo"),
                   callback = function() self:onUndo() end },
             },
