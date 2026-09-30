@@ -30,6 +30,7 @@ to create a "river" (connected sea of black cells) and isolated "islands"
 - **Cell states** — unknown, white (island), black (river)
 - **Island counter** — shows remaining cells needed for each numbered island
 - **Check** — highlights violations of each rule
+- **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 - **Reveal solution** — shows the full solution
 - **Undo** — step back through your moves
 - **Auto-save** — game state saved and restored on next launch
