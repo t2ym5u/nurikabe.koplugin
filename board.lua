@@ -9,6 +9,7 @@ end
 
 local UndoStack  = lrequire_common("undo_stack")
 local grid_utils = lrequire_common("grid_utils")
+local Hint = lrequire_common("hint")
 
 local emptyGrid     = grid_utils.emptyGrid
 local emptyBoolGrid = grid_utils.emptyBoolGrid
@@ -654,6 +655,18 @@ end
 function NurikabeBoard:isShowingSolution()
     return self.reveal_solution
 end
+
+-- isSolved() requires every non-clue cell decided, so whites are offered too.
+Hint.install(NurikabeBoard, {
+    getUser     = function(b, r, c) return b.user[r][c] end,
+    getSolution = function(b, r, c)
+        return b.solution_black[r][c] and STATE_BLACK or STATE_WHITE
+    end,
+    isEmpty     = function(v) return v == STATE_UNKNOWN end,
+    isGiven     = function(b, r, c) return b.clues[r][c] > 0 end,
+    setCell     = function(b, r, c, v) return b:setCellState(r, c, v) end,
+    blank       = STATE_UNKNOWN,
+})
 
 function NurikabeBoard:serialize()
     local n = self.n
