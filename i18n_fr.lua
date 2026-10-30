@@ -1,4 +1,5 @@
 return {
+    ["Unknown: %1"] = { fr = "Inconnues : %1", es = "Desconocidas: %1", de = "Unbekannt: %1" },
     ["Nurikabe"] = { fr = "Nurikabe", es = "Nurikabe", de = "Nurikabe" },
     ["Paint the river: connect islands of numbered white cells."] = { fr = "Peignez la rivière : reliez les îlots de cases blanches numérotées.", es = "Pinta el río: conecta las islas de casillas blancas numeradas.", de = "Male den Fluss: Verbinde die Inseln nummerierter weißer Zellen." },
 }
