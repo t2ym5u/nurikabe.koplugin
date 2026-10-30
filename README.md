@@ -45,8 +45,8 @@ to create a "river" (connected sea of black cells) and isolated "islands"
 | Undo last move | Tap **Undo** |
 | Check progress | Tap **Check** |
 | New game | Tap **New game** |
-| Change grid size | Tap **Grid** |
-| Change difficulty | Tap **Diff** |
+| Change grid size | Tap **Size** |
+| Change difficulty | Tap **Difficulty** |
 | Show rules | Tap **Rules** |
 
 ## Why e-ink friendly?

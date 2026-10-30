@@ -42,8 +42,18 @@ function NurikabeBoardWidget:init()
     local n   = self.board and self.board.n or 5
     self.cols = n
     self.rows = n
+    -- Clues are areas and can reach two digits: size the font for the
+    -- widest one on this board, not for a single digit.
+    local max_clue = 9
+    if self.board then
+        for r = 1, n do
+            for c = 1, n do
+                max_clue = math.max(max_clue, self.board.clues[r][c] or 0)
+            end
+        end
+    end
+    self.max_value = max_clue
     GridWidgetBase.init(self)
-
 end
 
 function NurikabeBoardWidget:onCellTap(row, col)
@@ -91,8 +101,11 @@ function NurikabeBoardWidget:paintTo(bb, x, y)
     local thick = Size.line.thick or 2
     for i = 0, n do
         local lw = (i == 0 or i == n) and thick or thin
-        drawLine(bb, x + math.floor(i*cell), y, lw, self.dimen.h, C_LINE)
-        drawLine(bb, x, y + math.floor(i*cell), self.dimen.w, lw, C_LINE)
+        -- The closing line sits inside the widget: drawn at i * cell it
+        -- would spill lw - 1 pixels past the right and bottom edges.
+        local off = (i == n) and (self.dimen.w - lw) or math.floor(i * cell)
+        drawLine(bb, x + off, y, lw, self.dimen.h, C_LINE)
+        drawLine(bb, x, y + off, self.dimen.w, lw, C_LINE)
     end
 
     -- Cell content
