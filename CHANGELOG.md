@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-11-04
+
+### Changed
+- More varied islands: on 10×10 and 15×15 grids about 70% of the islands
+  used to be a single numbered cell; now islands of 2 to 4 cells are
+  common and lone 1s are about 50% (10×10) to 60% (15×15) of the islands.
+  Puzzles have fewer numbers (15×15: about 47 instead of 50-53), and on
+  10×10 Hard has fewer than Easy (18 vs 20).
+- Puzzles therefore differ from 1.6.0 for the same seed (Daily Challenge
+  included).
+- Uses less memory: the game loads when you open it, not when KOReader
+  starts, so it no longer takes memory or startup time while unplayed.
+
+### Fixed
+- A Medium or Hard puzzle could come out easier than its level when the
+  generator ran out of tries: 1 in 5 Medium 5×5 puzzles and 1 in 5 Hard
+  10×10 puzzles did. The generator now keeps the hardest step reached and
+  tries more ways to reach the level; this happens to about 1 in 50
+  Medium puzzles, 1 in 10 Hard 10×10 and 1 in 20 Hard 15×15 puzzles.
+- Every puzzle still has exactly one solution and can be solved without
+  guessing. Generation takes at most about 0.05 s on a desktop (just over
+  a second on a Kobo); the "Generating puzzle…" bar covers the wait.
+
 ## [1.6.0] - 2026-11-04
 
 ### Fixed

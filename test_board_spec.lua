@@ -394,10 +394,49 @@ describe("NurikabeBoard", function()
                     end
                 end
                 assert.are.equal(seeds, needs.easy[1], "Easy must need the basic rules only")
-                assert.is_true(needs.medium[2] >= seeds * 0.6, ("n=%d Medium too easy"):format(n))
+                assert.is_true(needs.medium[2] >= seeds - 1, ("n=%d Medium too easy"):format(n))
                 assert.are.equal(0, needs.medium[3], "Medium never needs Hard reasoning")
-                assert.is_true(needs.hard[3] >= seeds * 0.6, ("n=%d Hard too easy"):format(n))
+                assert.is_true(needs.hard[3] >= seeds - 1, ("n=%d Hard too easy"):format(n))
             end
+        end)
+
+        it("islands of varied sizes, not mostly 1s (1.7.0)", function()
+            -- 1.6.0 had ~70% of islands of one cell at 10x10 and 15x15
+            for _, n in ipairs({ 10, 15 }) do
+                for _, diff in ipairs(DIFFS) do
+                    local islands, ones = 0, 0
+                    for seed = 1, 6 do
+                        local b = gen(n, diff, seed)
+                        for r = 1, n do for c = 1, n do
+                            local v = b.clues[r][c]
+                            if v > 0 then
+                                islands = islands + 1
+                                if v == 1 then ones = ones + 1 end
+                            end
+                        end end
+                    end
+                    assert.is_true(ones / islands < (n == 10 and 0.62 or 0.66),
+                        ("n=%d %s: %d of %d islands are 1s"):format(n, diff, ones, islands))
+                end
+            end
+        end)
+
+        it("a puzzle reported at its level really needs that level (1.7.0)", function()
+            local short = 0
+            for _, n in ipairs(SIZES) do
+                for _, diff in ipairs({ "medium", "hard" }) do
+                    for seed = 1, 5 do
+                        local b = gen(n, diff, seed)
+                        local t = (Board.logicSolve(b.clues, n, 1)) and 1
+                            or (Board.logicSolve(b.clues, n, 2)) and 2 or 3
+                        assert.are.equal(t < TIER[diff], b.gen_short == true,
+                            ("n=%d %s seed=%d"):format(n, diff, seed))
+                        if b.gen_short then short = short + 1 end
+                    end
+                end
+            end
+            -- rare: about 1 in 50 Medium, 1 in 10-20 Hard puzzles
+            assert.is_true(short <= 2, short .. " of 30 puzzles easier than their level")
         end)
 
         it("same seed, same puzzle (Daily Challenge)", function()

@@ -906,16 +906,23 @@ end
 -- Construction
 -- ---------------------------------------------------------------------------
 -- 1. Seed: start all black and whiten one cell of a 2x2 black block at a
---    time (the most constrained block first), away from other white cells
---    when possible and never cutting the river: a scatter of 1s (a few 2s
---    or 3s where a block leaves no choice). Every white cell is numbered,
---    so it solves at once.
+--    time (the most constrained block first), never cutting the river.
+--    Half the time the cell grows a neighbouring island of up to 3 cells
+--    instead of starting a lone 1, so islands of 2 to 4 cells are common
+--    from the start. Every island is numbered; where the solver can't
+--    finish this layout, the islands around the cells it left open are
+--    cleared and the gap is filled with lone 1s again, which it can.
 -- 2. Dig: grow an island by one cell, or join two islands through a cell
---    (dropping one of their numbers), a few changes at a time, keeping them
---    only if the puzzle still solves without going beyond the difficulty's
---    tier. Changes that can't be kept are undone, and the island growth
---    stops when nothing else fits (or the work budget runs out). The
---    puzzle is therefore always unique and never needs a guess.
+--    (dropping one of their numbers), a few changes at a time and lone 1s
+--    first, keeping them only if the puzzle still solves without going
+--    beyond the difficulty's tier. Changes that can't be kept are undone.
+--    When nothing else fits, a cell the river needs may turn white if a
+--    lone 1 elsewhere turns black and reconnects it. The puzzle is
+--    therefore always unique and never needs a guess.
+-- 3. Level: once the puzzle needs the difficulty's tier, no change that
+--    makes it easier is kept. If it never does, the dig goes on a while,
+--    then numbers are moved within their islands, then a new attempt
+--    starts (see NurikabeBoard:generate()).
 
 -- removable[i] for every black cell: whitening it leaves the river
 -- connected (the non-articulation cells of the connected black region).
@@ -966,31 +973,36 @@ local function joinTarget(nbr, own, x)
     return k
 end
 
-local function seedLayout(n)
+-- pjoin: when a block can either take a new lone 1 or grow a neighbouring
+-- island still below SEED_JOIN_MAX cells, chance of growing it (more
+-- islands of 2-4 cells, fewer 1s). own/size/K: continue an existing
+-- layout (only its 2x2 black blocks get filled).
+local SEED_JOIN_MAX = 4
+local function seedLayout(n, pjoin, own, size, K)
     local g = geometry(n)
     local N, nbr, blocks = g.N, g.nbr, g.blocks
-    local own, size, K = {}, {}, 0
-    for i = 1, N do own[i] = 0 end
+    if not own then
+        own, size, K = {}, {}, 0
+        for i = 1, N do own[i] = 0 end
+    end
     local disc, low, removable = {}, {}, {}
-    local best, opts = {}, {}
+    local best, opts, jopts = {}, {}, {}
     while true do
         riverRemovable(g, own, removable, disc, low)
-        -- the 2x2 black block with the fewest cells that can become a lone
-        -- 1, else the fewest that can extend a small island
+        -- the 2x2 black block with the fewest cells that can turn white
         local bestv, nbest = math.huge, 0
         for bi = 1, #blocks do
             local b = blocks[bi]
             if own[b[1]] == 0 and own[b[2]] == 0 and own[b[3]] == 0 and own[b[4]] == 0 then
-                local iso, join = 0, 0
+                local cnt = 0
                 for t = 1, 4 do
                     local x = b[t]
                     if removable[x] then
                         local k = joinTarget(nbr, own, x)
-                        if k == 0 then iso = iso + 1
-                        elseif k and size[k] < 3 then join = join + 1 end
+                        if k == 0 or (k and size[k] < SEED_JOIN_MAX) then cnt = cnt + 1 end
                     end
                 end
-                local v = iso > 0 and iso or (join > 0 and 10 + join or 100)
+                local v = cnt > 0 and cnt or 100
                 if v < bestv then bestv = v; nbest = 1; best[1] = b
                 elseif v == bestv then nbest = nbest + 1; best[nbest] = b end
             end
@@ -998,17 +1010,18 @@ local function seedLayout(n)
         if nbest == 0 then break end
         if bestv == 100 then return nil end
         local b = best[math.random(nbest)]
-        local no = 0
+        local no, nj = 0, 0
         for t = 1, 4 do
             local x = b[t]
             if removable[x] then
                 local k = joinTarget(nbr, own, x)
-                if (bestv < 10 and k == 0) or (bestv >= 10 and k and k > 0 and size[k] < 3) then
-                    no = no + 1; opts[no] = x
-                end
+                if k == 0 then no = no + 1; opts[no] = x
+                elseif k and size[k] < SEED_JOIN_MAX then nj = nj + 1; jopts[nj] = x end
             end
         end
-        local x = opts[math.random(no)]
+        local x
+        if nj > 0 and (no == 0 or math.random() < pjoin) then x = jopts[math.random(nj)]
+        else x = opts[math.random(no)] end
         local k = joinTarget(nbr, own, x)
         if k == 0 then K = K + 1; k = K; size[k] = 0 end
         own[x] = k; size[k] = size[k] + 1
@@ -1016,39 +1029,85 @@ local function seedLayout(n)
     return own, size, K
 end
 
--- cfg: tier, max_island, batch (changes per check), radius (local
--- pre-check), budget (solver rounds for the whole call, counted in
--- `meter`). on_progress(fraction) optional.
+-- cfg: tier, max_island, pjoin, repairs, batch (changes per check), radius
+-- (local pre-check), work (solver cap), relocate (tries).
+-- The dig runs until `meter.rounds` (solver rounds, all calls) reaches
+-- `limit`, or `ext` while the puzzle doesn't need the level's tier yet.
+-- on_progress(fraction) optional.
 -- Returns clue (flat), own (flat: island id or 0), island count, stats of
 -- the final solve -- or nil if no seed layout could be built.
-local function buildPuzzle(n, cfg, meter, on_progress)
+local function buildPuzzle(n, cfg, meter, limit, ext, on_progress)
     local g = geometry(n)
-    local N, nbr = g.N, g.nbr
+    local N, nbr, blocksOf = g.N, g.nbr, g.blocksOf
     local own, size, K
     local clue, pos, cells
     for _ = 1, 20 do
-        own, size, K = seedLayout(n)
-        if own then
+        own, size, K = seedLayout(n, cfg.pjoin)
+        clue, pos = {}, {}
+        for i = 1, N do clue[i] = 0 end
+        local K0 = 0
+        for rep = 1, cfg.repairs + 1 do
+            if not own then break end
             cells = {}
             for k = 1, K do cells[k] = {} end
             for i = 1, N do local k = own[i]; if k > 0 then local l = cells[k]; l[#l + 1] = i end end
-            clue, pos = {}, {}
-            for i = 1, N do clue[i] = 0 end
             for k = 1, K do
                 local l = cells[k]
-                local x = l[math.random(#l)]
-                clue[x] = #l; pos[k] = x
+                if k > K0 then
+                    if #l > 0 then
+                        local x = l[math.random(#l)]
+                        clue[x] = #l; pos[k] = x
+                    end
+                elseif pos[k] then
+                    clue[pos[k]] = #l   -- the refill may have grown it
+                end
             end
-            if solve(n, clue, cfg.tier, cfg.work, nil, meter) then break end
-            own = nil
+            local ok, st = solve(n, clue, cfg.tier, cfg.work, nil, meter)
+            if ok then break end
+            if rep > cfg.repairs then own = nil; break end
+            -- the solver is stuck somewhere: clear the islands in and around
+            -- the cells it left open and fill that gap with lone 1s again
+            local wipe = {}
+            for i = 1, N do
+                if st[i] == 0 then
+                    if own[i] > 0 then wipe[own[i]] = true end
+                    local nb = nbr[i]
+                    for t = 1, #nb do local o = own[nb[t]]; if o > 0 then wipe[o] = true end end
+                end
+            end
+            for i = 1, N do
+                local k = own[i]
+                if k > 0 and wipe[k] then own[i] = 0; clue[i] = 0; size[k] = 0; pos[k] = nil end
+            end
+            K0 = K
+            own, size, K = seedLayout(n, 0, own, size, K)
         end
+        if own then break end
     end
     if not own then return nil end
-    local nIsl = K
+    local nIsl = 0
     local nblack = 0
     for i = 1, N do if own[i] == 0 then nblack = nblack + 1 end end
+    for k = 1, K do if size[k] > 0 then nIsl = nIsl + 1 end end
 
     local seen, q = {}, {}
+    -- all nblack black cells connected (BFS)
+    local function riverConnected()
+        local start = 0
+        for i = 1, N do seen[i] = false; if start == 0 and own[i] == 0 then start = i end end
+        if start == 0 then return true end
+        seen[start] = true; q[1] = start
+        local qh, qt = 1, 1
+        while qh <= qt do
+            local i = q[qh]; qh = qh + 1
+            local nb = nbr[i]
+            for t = 1, #nb do
+                local j = nb[t]
+                if own[j] == 0 and not seen[j] then seen[j] = true; qt = qt + 1; q[qt] = j end
+            end
+        end
+        return qt == nblack
+    end
     -- whitening x keeps the river connected (BFS; for the 2nd+ change of a
     -- batch, after the first has altered the river)
     local function removable(x)
@@ -1084,36 +1143,102 @@ local function buildPuzzle(n, cfg, meter, on_progress)
         end
         return a, b
     end
+    -- blackening white cell y leaves no 2x2 black block
+    local function no2x2(y)
+        local bl = blocksOf[y]
+        for t = 1, #bl do
+            local blk = bl[t]
+            local w = false
+            for u = 1, 4 do local z = blk[u]; if z ~= y and own[z] > 0 then w = true; break end end
+            if not w then return false end
+        end
+        return true
+    end
+    -- Whitening x (which the river needs, next to islands a and maybe b)
+    -- while a lone 1 elsewhere turns black to reconnect the river: that 1,
+    -- or nil.
+    local ycand = {}
+    local function rerouteCell(x, a, b)
+        own[x] = a; nblack = nblack - 1
+        local ny = 0
+        for y = 1, N do
+            local k = own[y]
+            if k > 0 and k ~= a and k ~= b and size[k] == 1 then
+                local nb = nbr[y]
+                local nbl = 0
+                for t = 1, #nb do if own[nb[t]] == 0 then nbl = nbl + 1 end end
+                if nbl >= 2 then ny = ny + 1; ycand[ny] = y end
+            end
+        end
+        local found
+        while ny > 0 do
+            local u = math.random(ny)
+            local y = ycand[u]
+            ycand[u] = ycand[ny]; ny = ny - 1
+            if no2x2(y) then
+                local k = own[y]
+                own[y] = 0; nblack = nblack + 1
+                local ok = riverConnected()
+                own[y] = k; nblack = nblack - 1
+                if ok then found = y; break end
+            end
+        end
+        own[x] = 0; nblack = nblack + 1
+        return found
+    end
 
     local batch = cfg.batch
-    local failed = {}
-    local cand = {}
+    local failed, failedR = {}, {}
+    local cand, cand1 = {}, {}
     local rem_ok, disc, low = {}, {}, {}
     local loc = {}
     local stats
-    while meter.rounds < cfg.budget do
+    -- once the puzzle needs the level's tier it must keep needing it
+    local reached = cfg.tier == 1
+    while meter.rounds < limit or (not reached and meter.rounds < ext) do
         riverRemovable(g, own, rem_ok, disc, low)
-        local nc = 0
+        -- growths and joins; those touching a lone 1 are tried first
+        local nc, nc1 = 0, 0
         for x = 1, N do
             if rem_ok[x] and not failed[x] then
                 local a, b = adjIslands(x)
                 if a and size[a] + 1 + (b and size[b] or 0) <= cfg.max_island then
                     nc = nc + 1; cand[nc] = x
+                    if size[a] == 1 or (b and size[b] == 1) then nc1 = nc1 + 1; cand1[nc1] = x end
                 end
             end
         end
-        if nc == 0 then break end
+        -- nothing left: try cells the river needs, rerouting it through a 1
+        local reroute = nc == 0
+        if reroute then
+            for x = 1, N do
+                if own[x] == 0 and not rem_ok[x] and not failedR[x] then
+                    local a, b = adjIslands(x)
+                    if a and size[a] + 1 + (b and size[b] or 0) <= cfg.max_island then
+                        nc = nc + 1; cand[nc] = x
+                    end
+                end
+            end
+            if nc == 0 then break end
+        end
         -- a batch of changes far enough apart not to interfere
         local busy, bisl = {}, {}
         local applied = {}
         local tries = 0
         while #applied < batch and tries < 4 * batch do
             tries = tries + 1
-            local x = cand[math.random(nc)]
+            local x
+            if nc1 > 0 and math.random() < 0.7 then x = cand1[math.random(nc1)] else x = cand[math.random(nc)] end
             local a, b = adjIslands(x)
-            if not busy[x] and a and not bisl[a] and not (b and bisl[b]) then
+            if not busy[x] and own[x] == 0 and a and not bisl[a] and not (b and bisl[b]) then
                 local ns = size[a] + 1 + (b and size[b] or 0)
-                if ns <= cfg.max_island and (#applied == 0 or removable(x)) then
+                local y
+                if reroute then
+                    y = rerouteCell(x, a, b)
+                    if not y then failedR[x] = true
+                    elseif busy[y] or bisl[own[y]] then y = nil end
+                end
+                if ns <= cfg.max_island and (y or (not reroute and (#applied == 0 or removable(x)))) then
                     local rec = { x = x, a = a, b = b, pa = pos[a], va = clue[pos[a]] }
                     own[x] = a; nblack = nblack - 1
                     local ca = cells[a]; ca[#ca + 1] = x
@@ -1130,11 +1255,20 @@ local function buildPuzzle(n, cfg, meter, on_progress)
                     end
                     clue[pos[a]] = ns
                     size[a] = ns
-                    applied[#applied + 1] = rec
                     busy[x] = true; bisl[a] = true
                     if b then bisl[b] = true end
                     local nb = nbr[x]
                     for t = 1, #nb do busy[nb[t]] = true end
+                    if y then
+                        local k = own[y]
+                        rec.y, rec.yk, rec.ycells = y, k, cells[k]
+                        own[y] = 0; clue[y] = 0; nblack = nblack + 1
+                        size[k] = 0; cells[k] = {}; nIsl = nIsl - 1
+                        busy[y] = true; bisl[k] = true
+                        nb = nbr[y]
+                        for t = 1, #nb do busy[nb[t]] = true end
+                    end
+                    applied[#applied + 1] = rec
                 end
             end
         end
@@ -1145,10 +1279,14 @@ local function buildPuzzle(n, cfg, meter, on_progress)
         local R = cfg.radius
         for i = 1, N do loc[i] = own[i] > 0 and 1 or -1 end
         for t = 1, #applied do
-            local x = applied[t].x
-            local xr, xc = math.floor((x - 1) / n) + 1, (x - 1) % n + 1
-            for r = math.max(1, xr - R), math.min(n, xr + R) do
-                for c = math.max(1, xc - R), math.min(n, xc + R) do loc[(r - 1) * n + c] = 0 end
+            for pass = 1, 2 do
+                local x = pass == 1 and applied[t].x or applied[t].y
+                if x then
+                    local xr, xc = math.floor((x - 1) / n) + 1, (x - 1) % n + 1
+                    for r = math.max(1, xr - R), math.min(n, xr + R) do
+                        for c = math.max(1, xc - R), math.min(n, xc + R) do loc[(r - 1) * n + c] = 0 end
+                    end
+                end
             end
         end
         local ok = solve(n, clue, cfg.tier, cfg.work, loc, meter)
@@ -1156,22 +1294,34 @@ local function buildPuzzle(n, cfg, meter, on_progress)
         if ok then
             local full
             ok, full, st2 = solve(n, clue, cfg.tier, cfg.work, nil, meter)
+            if ok and reached and st2[cfg.tier] == 0 then ok = false end
         end
         if ok then
             stats = st2
+            if st2[cfg.tier] > 0 then reached = true end
             batch = math.min(batch * 2, cfg.batch)
             -- the neighbourhood changed: cells that failed nearby may fit now
             for t = 1, #applied do
-                local nb = nbr[applied[t].x]
-                for u = 1, #nb do
-                    local nb2 = nbr[nb[u]]
-                    for w = 1, #nb2 do failed[nb2[w]] = nil end
+                for pass = 1, 2 do
+                    local x = pass == 1 and applied[t].x or applied[t].y
+                    if x then
+                        local nb = nbr[x]
+                        for u = 1, #nb do
+                            local nb2 = nbr[nb[u]]
+                            for w = 1, #nb2 do failed[nb2[w]] = nil; failedR[nb2[w]] = nil end
+                        end
+                    end
                 end
             end
         else
             for t = #applied, 1, -1 do
                 local rec = applied[t]
                 local a, b, x = rec.a, rec.b, rec.x
+                if rec.y then
+                    local y, k = rec.y, rec.yk
+                    own[y] = k; clue[y] = 1; nblack = nblack - 1
+                    size[k] = 1; cells[k] = rec.ycells; nIsl = nIsl + 1
+                end
                 local ca = cells[a]
                 clue[pos[a]] = 0
                 if b then
@@ -1186,14 +1336,87 @@ local function buildPuzzle(n, cfg, meter, on_progress)
                 pos[a] = rec.pa; clue[rec.pa] = rec.va
                 size[a] = #ca
             end
-            if #applied == 1 then failed[applied[1].x] = true end
+            if #applied == 1 then
+                local x = applied[1].x
+                if reroute then failedR[x] = true else failed[x] = true end
+            end
             batch = math.max(1, math.floor(#applied / 2))
         end
-        if on_progress then on_progress(math.min(1, meter.rounds / cfg.budget)) end
+        if on_progress then on_progress(math.min(1, meter.rounds / cfg.total)) end
     end
-    if not stats then
-        local ok0, st0
-        ok0, st0, stats = solve(n, clue, cfg.tier, cfg.work)
+    local _ok, _st
+    _ok, _st, stats = solve(n, clue, cfg.tier, cfg.work, nil, meter)
+    -- Still too easy for the level: move numbers within their islands (the
+    -- layout stays), keeping each move that still solves within the tier,
+    -- until one needs it. The deepest tier is about big islands.
+    if not reached and stats[cfg.tier] == 0 then
+        local isl = {}
+        for pass = 1, 2 do
+            local minsz = (pass == 1 and cfg.tier == 3) and 4 or 2
+            for k = 1, K do
+                if size[k] >= minsz and pos[k] and own[pos[k]] == k then isl[#isl + 1] = k end
+            end
+            if #isl > 0 then break end
+        end
+        for _ = 1, (#isl > 0 and cfg.relocate or 0) do
+            if meter.rounds >= cfg.total then break end
+            local k = isl[math.random(#isl)]
+            local ck = cells[k]
+            local x = ck[math.random(#ck)]
+            local old = pos[k]
+            if x ~= old then
+                clue[old] = 0; clue[x] = size[k]; pos[k] = x
+                -- same cheap pre-check as the dig, around the island
+                for i = 1, N do loc[i] = own[i] > 0 and 1 or -1 end
+                for t = 1, #ck do
+                    local z = ck[t]
+                    local zr, zc = math.floor((z - 1) / n) + 1, (z - 1) % n + 1
+                    for r = math.max(1, zr - 3), math.min(n, zr + 3) do
+                        for c = math.max(1, zc - 3), math.min(n, zc + 3) do loc[(r - 1) * n + c] = 0 end
+                    end
+                end
+                local ok, _, st3 = solve(n, clue, cfg.tier, cfg.work, loc, meter)
+                if ok then ok, _, st3 = solve(n, clue, cfg.tier, cfg.work, nil, meter) end
+                if ok then
+                    stats = st3
+                    if st3[cfg.tier] > 0 then break end
+                else
+                    clue[x] = 0; clue[old] = size[k]; pos[k] = old
+                end
+            end
+        end
+    end
+    -- Then each number at every cell of its island in turn, a move kept
+    -- only if even a local solve (everything away from the island given)
+    -- needs the tier: the full solve, which knows less, needs it too.
+    if not reached and stats[cfg.tier] == 0 then
+        local checks = 0
+        for k = 1, K do
+            if size[k] >= 2 and pos[k] and own[pos[k]] == k then
+                local ck = cells[k]
+                for t0 = 1, #ck do
+                    local x, old = ck[t0], pos[k]
+                    if x ~= old and checks < cfg.scan then
+                        checks = checks + 1
+                        clue[old] = 0; clue[x] = size[k]; pos[k] = x
+                        for i = 1, N do loc[i] = own[i] > 0 and 1 or -1 end
+                        for t = 1, #ck do
+                            local z = ck[t]
+                            local zr, zc = math.floor((z - 1) / n) + 1, (z - 1) % n + 1
+                            for r = math.max(1, zr - 3), math.min(n, zr + 3) do
+                                for c = math.max(1, zc - 3), math.min(n, zc + 3) do loc[(r - 1) * n + c] = 0 end
+                            end
+                        end
+                        local ok, _, st3 = solve(n, clue, cfg.tier, cfg.work, loc, meter)
+                        if ok and st3[cfg.tier] > 0 then
+                            ok, _, st3 = solve(n, clue, cfg.tier, cfg.work, nil, meter)
+                            if ok and st3[cfg.tier] > 0 then return clue, own, nIsl, st3 end
+                        end
+                        clue[x] = 0; clue[old] = size[k]; pos[k] = old
+                    end
+                end
+            end
+        end
     end
     return clue, own, nIsl, stats
 end
@@ -1231,14 +1454,18 @@ local GEN_CONFIG = {
     hard   = { tier = 3, max_small = 6, max_large = 9 },
 }
 
--- Work budget in solver rounds (never time, so a seed gives the same puzzle
--- on every device), sized so the slowest case stays around 40 ms on a
--- desktop (about a second on a Kobo).
+-- Work budget in solver rounds per attempt, and how many budgets all
+-- attempts may use (never time, so a seed gives the same puzzle on every
+-- device), sized so the slowest case stays around 40 ms on a desktop
+-- (about a second on a Kobo). 5x5 attempts are cheap but often come out
+-- too easy, so they get more of them.
 local function genBudget(n, tier)
-    if n <= 6 then return 600 end
-    if n <= 10 then return ({ 700, 700, 600 })[tier] or 600 end
-    return ({ 1200, 1000, 600 })[tier] or 600
+    if n <= 6 then return 300, 6 end
+    if n <= 10 then return ({ 450, 450, 500 })[tier] or 450, 2.5 end
+    return ({ 700, 550, 450 })[tier] or 450, 2.5
 end
+-- An attempt still too easy for its level digs on up to EXTEND budgets.
+local EXTEND = 2
 
 -- Last resort, never reached in testing: 1s on every (even, even) cell.
 -- Every 2x2 block holds one, the odd rows and columns keep the river
@@ -1263,28 +1490,38 @@ function NurikabeBoard:generate(difficulty, on_progress)
 
     local n   = self.n
     local gc  = GEN_CONFIG[self.difficulty] or GEN_CONFIG.easy
+    local budget, attempts = genBudget(n, gc.tier)
     local cfg = {
         tier       = gc.tier,
         max_island = n <= 6 and gc.max_small or gc.max_large,
+        pjoin      = 0.5,
+        repairs    = 4,
         batch      = 8,
         radius     = 3,
         work       = 3000,
-        budget     = genBudget(n, gc.tier),
+        relocate   = 30,
+        scan       = 150,
+        total      = budget * attempts,
     }
     local meter = { rounds = 0 }
     local clue, own
-    local tries = 0
-    -- Medium and Hard retry (budget permitting) until the puzzle really
-    -- needs their tier; small grids often come out easier.
+    local best = 0
+    -- Medium and Hard try again (budget permitting) until the puzzle really
+    -- needs their tier; failing that, the hardest attempt is kept.
+    self.gen_attempts, self.gen_short = 0, false
     repeat
-        local c, o, _k, stats = buildPuzzle(n, cfg, meter, on_progress)
-        if c and not clue then clue, own = c, o end
-        if c and (cfg.tier == 1 or stats[cfg.tier] > 0) then
-            clue, own = c, o
-            break
+        self.gen_attempts = self.gen_attempts + 1
+        local start = meter.rounds
+        local c, o, _k, stats = buildPuzzle(n, cfg, meter, math.min(start + budget, cfg.total),
+            math.min(start + EXTEND * budget, cfg.total), on_progress)
+        if c then
+            local lvl = stats[3] > 0 and 3 or stats[2] > 0 and 2 or 1
+            if not clue or lvl > best then clue, own, best = c, o, lvl end
+            if lvl >= cfg.tier then break end
         end
-        tries = tries + 1
-    until meter.rounds >= cfg.budget / 2 or tries >= 10
+    until meter.rounds >= cfg.total
+    self.gen_short = best < cfg.tier
+    self.gen_rounds = meter.rounds
     if not clue then clue, own = fallbackPuzzle(n) end
 
     local clues, solution_black = emptyGrid(n, n, 0), emptyBoolGrid(n)
