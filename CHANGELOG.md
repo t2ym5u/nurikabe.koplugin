@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+- Much faster puzzle generation: 5×5 Easy took up to 1.8 s on a desktop
+  and 10×10 / 15×15 up to 0.6 s (up to a minute on an e-reader); it is
+  now a few hundredths of a second at 5×5 and at most about a tenth of a
+  second at 15×15. The uniqueness check deduces forced cells (unreachable
+  cells, island borders, black connectivity) and the search is bounded by
+  a fixed amount of work. A "Generating puzzle…" bar appears if
+  generation still takes a moment (needs game-common 1.12.0).
+
+### Fixed
+- The uniqueness check counted the same island shape once per order its
+  cells could be added in, so unique puzzles were taken for ambiguous and
+  thrown away: 5×5 puzzles were only accepted when that happened not to
+  occur, and at 10×10 almost none could be proven unique. 5×5 puzzles
+  therefore differ from 1.4.x for the same seed (Daily Challenge
+  included), still with exactly one solution; 10×10 Hard is now proven
+  unique about half the time (was almost never), so those differ too.
+
 ## [1.4.3] - 2026-11-03
 
 ### Changed

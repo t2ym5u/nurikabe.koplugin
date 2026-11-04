@@ -90,142 +90,266 @@ end
 -- Uniqueness check
 -- ---------------------------------------------------------------------------
 
--- Counts region-tiling completions (up to `limit`) consistent with the
--- given island clues (each clue is a target size at a fixed seed cell).
--- Grows islands directly (MRV: always extend whichever incomplete island
--- currently has the fewest legal frontier cells, branching over each),
--- mirroring how tryGenerate itself constructs a solution -- an EARLIER
--- version processed cells in fixed row-major order and let a cell join an
--- island only via an already-decided same-island NEIGHBOR, which silently
--- misses any valid shape where the seed isn't that island's row-major-
--- topmost-leftmost cell (islands grow in every direction from the seed, so
--- this is common) and was consequently both wrong (under-counted,
--- sometimes missing the known-valid solution entirely) and pathologically
--- slow at n=10+. Once every island reaches its target size, whatever's
--- left is checked for full black connectivity and no 2x2 block. Returns
--- (solutions_found, exhausted); exhausted=true means node_budget was hit
--- before the search concluded, so the count isn't proof. Mirrors
--- sudokukiller.koplugin/board.lua's countCageSolutions.
+-- Counts solutions (up to `limit`) consistent with the given island clues
+-- (each clue is a target size at a fixed seed cell): islands of exactly
+-- their size, never touching each other, every other cell black, black
+-- 4-connected with no 2x2 block. Returns (solutions_found, exhausted);
+-- exhausted=true means node_budget was hit before the search concluded,
+-- so the count isn't proof.
+--
+-- Islands are grown with MRV (always extend whichever incomplete island
+-- has the fewest cells it could take next), but each branch is binary on
+-- one frontier cell: it joins that island, or it is black. A cell next to
+-- an island can't belong to any other island (they'd touch), so the two
+-- branches cover everything exactly once. (Before 1.5.0 the search
+-- branched over every frontier cell in turn, which reached the same island
+-- shape once per growth order and counted it that many times -- unique
+-- puzzles came out as "2 solutions", so at 10x10 and up nearly nothing
+-- was ever proven unique, and the hunt for one cost up to 1.8 s.)
+-- Between branches it propagates to a fixpoint; each rule only forces
+-- what every solution extending the current grid shares:
+--   - a cell next to a complete island, or next to two different islands,
+--     is black;
+--   - a cell no incomplete island can still reach (through cells it may
+--     take, within its remaining size) is black; an island that can't
+--     reach enough such cells is a dead end;
+--   - more black cells than the clues leave room for, a 2x2 black block,
+--     or black cells that can no longer connect through black/undecided
+--     cells are dead ends.
+-- Cell state: 0 undecided, -1 black, k > 0 island k.
 local function countSolutions(clues, n, limit, node_budget)
-    local islands = {}
+    local N = n * n
+    local nbr = {}
+    for r = 1, n do for c = 1, n do
+        local l = {}
+        for _, d in ipairs(DIRS) do
+            local nr, nc = r + d[1], c + d[2]
+            if nr >= 1 and nr <= n and nc >= 1 and nc <= n then l[#l + 1] = (nr - 1) * n + nc end
+        end
+        nbr[(r - 1) * n + c] = l
+    end end
+    local blocks = {}
+    for r = 1, n - 1 do for c = 1, n - 1 do
+        local i = (r - 1) * n + c
+        blocks[#blocks + 1] = { i, i + 1, i + n, i + n + 1 }
+    end end
+
+    local owner, target, size = {}, {}, {}
+    local icells = {}                   -- island k -> its cells, in join order
+    for i = 1, N do owner[i] = 0 end
+    local K, white = 0, 0
     for r = 1, n do for c = 1, n do
         if clues[r][c] > 0 then
-            islands[#islands + 1] = { r = r, c = c, target = clues[r][c], cells = { { r, c } } }
+            K = K + 1
+            local i = (r - 1) * n + c
+            owner[i] = K
+            target[K], size[K], icells[K] = clues[r][c], 1, { i }
+            white = white + clues[r][c]
         end
     end end
-    local num_islands = #islands
-
-    local color = {} -- 0 = undecided, i = island i (black is implicit: still 0 at the end)
-    for r = 1, n do
-        color[r] = {}
-        for c = 1, n do color[r][c] = 0 end
+    for i = 1, N do         -- two clues side by side: islands touch
+        if owner[i] > 0 then
+            for _, j in ipairs(nbr[i]) do
+                if owner[j] > 0 and owner[j] ~= owner[i] then return 0, false, 0 end
+            end
+        end
     end
-    local island_count = {}
-    for i = 1, num_islands do
-        island_count[i] = 1
-        color[islands[i].r][islands[i].c] = i
+    local max_black = N - white
+    if max_black < 0 then return 0, false, 0 end
+    local blacks = 0
+
+    local trail, tn = {}, 0
+    local changed = false
+    local function set(i, v)
+        local s = owner[i]
+        if s == v then return true end
+        if s ~= 0 then return false end
+        if v > 0 then
+            if size[v] >= target[v] then return false end
+            for _, j in ipairs(nbr[i]) do
+                local o = owner[j]
+                if o > 0 and o ~= v then return false end
+            end
+            size[v] = size[v] + 1
+            local l = icells[v]; l[#l + 1] = i
+        else
+            if blacks >= max_black then return false end
+            blacks = blacks + 1
+        end
+        owner[i] = v
+        tn = tn + 1; trail[tn] = i
+        changed = true
+        return true
+    end
+    local function undo(mark)
+        while tn > mark do
+            local i = trail[tn]
+            local v = owner[i]
+            if v > 0 then
+                size[v] = size[v] - 1
+                local l = icells[v]; l[#l] = nil
+            else
+                blacks = blacks - 1
+            end
+            owner[i] = 0
+            trail[tn] = nil; tn = tn - 1
+        end
+    end
+
+    -- A cell island k may take: undecided, next to no other island.
+    local function eligible(i, k)
+        if owner[i] ~= 0 then return false end
+        for _, j in ipairs(nbr[i]) do
+            local o = owner[j]
+            if o > 0 and o ~= k then return false end
+        end
+        return true
+    end
+
+    local reach, dist, queue = {}, {}, {}
+    local stamp = 0
+    local rstamp = 0
+    for i = 1, N do reach[i] = 0; dist[i] = 0 end
+    local seen = {}
+    for i = 1, N do seen[i] = 0 end
+
+    local function adjacencyProp()
+        for i = 1, N do
+            if owner[i] == 0 then
+                local first, black = nil, false
+                for _, j in ipairs(nbr[i]) do
+                    local o = owner[j]
+                    if o > 0 then
+                        if size[o] >= target[o] or (first and first ~= o) then black = true; break end
+                        first = o
+                    end
+                end
+                if black and not set(i, -1) then return false end
+            end
+        end
+        return true
+    end
+
+    local function reachProp()
+        rstamp = rstamp + 1
+        for k = 1, K do
+            local rem = target[k] - size[k]
+            if rem > 0 then
+                stamp = stamp + 1
+                local qh, qt = 1, 0
+                for _, i in ipairs(icells[k]) do
+                    seen[i] = stamp; dist[i] = 0
+                    qt = qt + 1; queue[qt] = i
+                end
+                local found = 0
+                while qh <= qt do
+                    local i = queue[qh]; qh = qh + 1
+                    local d = dist[i]
+                    if d < rem then
+                        for _, j in ipairs(nbr[i]) do
+                            if seen[j] ~= stamp and eligible(j, k) then
+                                seen[j] = stamp; dist[j] = d + 1
+                                reach[j] = rstamp
+                                found = found + 1
+                                qt = qt + 1; queue[qt] = j
+                            end
+                        end
+                    end
+                end
+                if found < rem then return false end
+            end
+        end
+        for i = 1, N do
+            if owner[i] == 0 and reach[i] ~= rstamp then
+                if not set(i, -1) then return false end
+            end
+        end
+        return true
+    end
+
+    local function blackProp()
+        local start
+        for _, b in ipairs(blocks) do
+            if owner[b[1]] == -1 and owner[b[2]] == -1 and owner[b[3]] == -1 and owner[b[4]] == -1 then
+                return false
+            end
+        end
+        for i = 1, N do if owner[i] == -1 then start = i; break end end
+        if not start then return true end
+        stamp = stamp + 1
+        local qh, qt = 1, 1
+        queue[1] = start; seen[start] = stamp
+        local got = 1
+        while qh <= qt do
+            local i = queue[qh]; qh = qh + 1
+            for _, j in ipairs(nbr[i]) do
+                if seen[j] ~= stamp and owner[j] <= 0 then
+                    seen[j] = stamp
+                    if owner[j] == -1 then got = got + 1 end
+                    qt = qt + 1; queue[qt] = j
+                end
+            end
+        end
+        return got == blacks
+    end
+
+    local function propagate()
+        repeat
+            changed = false
+            if not adjacencyProp() or not reachProp() or not blackProp() then return false end
+        until not changed
+        return true
+    end
+
+    -- MRV: the incomplete island with the fewest cells it could take next,
+    -- and its first such cell.
+    local function pick()
+        local best_k, best_cell, best_len = nil, nil, math.huge
+        stamp = stamp + 1
+        for k = 1, K do
+            if size[k] < target[k] then
+                local len, first = 0, nil
+                stamp = stamp + 1
+                for _, i in ipairs(icells[k]) do
+                    for _, j in ipairs(nbr[i]) do
+                        if seen[j] ~= stamp and eligible(j, k) then
+                            seen[j] = stamp
+                            len = len + 1
+                            first = first or j
+                        end
+                    end
+                end
+                if len < best_len then
+                    best_k, best_cell, best_len = k, first, len
+                    if len <= 1 then break end
+                end
+            end
+        end
+        return best_k, best_cell
     end
 
     local solutions, nodes, exhausted = 0, 0, false
-
-    local function frontierFor(idx)
-        local isl = islands[idx]
-        local cands, seen = {}, {}
-        for _, cell in ipairs(isl.cells) do
-            for _, d in ipairs(DIRS) do
-                local nr, nc = cell[1] + d[1], cell[2] + d[2]
-                local key = nr * 1000 + nc
-                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and color[nr][nc] == 0 and not seen[key] then
-                    local conflict = false
-                    for _, d2 in ipairs(DIRS) do
-                        local mr, mc = nr + d2[1], nc + d2[2]
-                        if mr >= 1 and mr <= n and mc >= 1 and mc <= n then
-                            local v = color[mr][mc]
-                            if v > 0 and v ~= idx then conflict = true; break end
-                        end
-                    end
-                    if not conflict then
-                        seen[key] = true
-                        cands[#cands + 1] = { nr, nc }
-                    end
-                end
-            end
-        end
-        return cands
-    end
-
-    local function finalBlackValid()
-        for r = 1, n - 1 do
-            for c = 1, n - 1 do
-                if color[r][c] == 0 and color[r + 1][c] == 0 and color[r][c + 1] == 0 and color[r + 1][c + 1] == 0 then
-                    return false
-                end
-            end
-        end
-        local start_r, start_c, total = nil, nil, 0
-        for r = 1, n do for c = 1, n do
-            if color[r][c] == 0 then
-                total = total + 1
-                if not start_r then start_r, start_c = r, c end
-            end
-        end end
-        if total == 0 then return true end
-        local visited = {}
-        for r = 1, n do visited[r] = {} end
-        local stack = { { start_r, start_c } }
-        visited[start_r][start_c] = true
-        local seen = 1
-        while #stack > 0 do
-            local cur = table.remove(stack)
-            for _, d in ipairs(DIRS) do
-                local nr, nc = cur[1] + d[1], cur[2] + d[2]
-                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and color[nr][nc] == 0 and not visited[nr][nc] then
-                    visited[nr][nc] = true
-                    seen = seen + 1
-                    stack[#stack + 1] = { nr, nc }
-                end
-            end
-        end
-        return seen == total
-    end
-
     local function search()
-        if solutions >= limit or exhausted then return end
         nodes = nodes + 1
         if nodes > node_budget then exhausted = true; return end
-
-        local best_idx, best_frontier, best_len = nil, nil, math.huge
-        for i = 1, num_islands do
-            if island_count[i] < islands[i].target then
-                local frontier = frontierFor(i)
-                if #frontier < best_len then
-                    best_len, best_frontier, best_idx = #frontier, frontier, i
-                    if best_len == 0 then break end
-                end
-            end
-        end
-
-        if not best_idx then
-            if finalBlackValid() then solutions = solutions + 1 end
+        if not propagate() then return end
+        local k, cell = pick()
+        if not k then
+            -- Every island is complete, so reachProp() blackened the rest
+            -- and blackProp() checked it.
+            solutions = solutions + 1
             return
         end
-        if best_len == 0 then return end
-
-        local isl = islands[best_idx]
-        for _, cell in ipairs(best_frontier) do
-            local cr, cc = cell[1], cell[2]
-            color[cr][cc] = best_idx
-            isl.cells[#isl.cells + 1] = cell
-            island_count[best_idx] = island_count[best_idx] + 1
-            search()
-            island_count[best_idx] = island_count[best_idx] - 1
-            isl.cells[#isl.cells] = nil
-            color[cr][cc] = 0
-            if solutions >= limit or exhausted then return end
-        end
+        if not cell then return end
+        local mark = tn
+        if set(cell, k) then search() end
+        undo(mark)
+        if solutions >= limit or exhausted then return end
+        if set(cell, -1) then search() end
+        undo(mark)
     end
     search()
-    return solutions, exhausted
+    return solutions, exhausted, nodes
 end
 
 local function tryGenerate(n, num_islands, min_sz, max_sz)
@@ -272,46 +396,61 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
     for i = 1, num_islands do order[i] = i end
     shuffle(order)
 
-    local function blackConnectedWithout(er, ec)
-        local sr, sc
-        for r = 1, n do
-            for c = 1, n do
-                if cell_island[r][c] == 0 and not (r == er and c == ec) then
-                    sr, sc = r, c; break
-                end
-            end
-            if sr then break end
-        end
-        if not sr then return true end
-        local visited = {}
-        for r = 1, n do visited[r] = {} end
-        local stack = { {sr, sc} }
-        visited[sr][sc] = true
-        local count = 1
-        while #stack > 0 do
-            local cell = table.remove(stack)
+    -- removable[(r-1)*n+c]: black (r, c) can turn white with the rest of
+    -- black still connected, for every cell at once: the non-articulation
+    -- cells of a connected black region (Tarjan), or the lone cell of a
+    -- 1-cell second component. One O(n^2) pass after each change instead
+    -- of a flood fill per candidate cell (1.5.0: that flood fill was most
+    -- of the time at 15x15); same answers, so the same puzzles.
+    local disc, low, removable = {}, {}, {}
+    local function blackRemovable()
+        for i = 1, n * n do disc[i] = 0; removable[i] = false end
+        local timer = 0
+        local cut = {}
+        local function dfs(i, parent)
+            timer = timer + 1
+            disc[i], low[i] = timer, timer
+            local children = 0
+            local r, c = math.floor((i - 1) / n) + 1, (i - 1) % n + 1
             for _, d in ipairs(DIRS) do
-                local nr, nc = cell[1]+d[1], cell[2]+d[2]
-                if nr >= 1 and nr <= n and nc >= 1 and nc <= n
-                    and cell_island[nr][nc] == 0 and not (nr == er and nc == ec)
-                    and not visited[nr][nc] then
-                    visited[nr][nc] = true
-                    count = count + 1
-                    stack[#stack+1] = {nr, nc}
+                local nr, nc = r + d[1], c + d[2]
+                if nr >= 1 and nr <= n and nc >= 1 and nc <= n and cell_island[nr][nc] == 0 then
+                    local j = (nr - 1) * n + nc
+                    if disc[j] == 0 then
+                        children = children + 1
+                        dfs(j, i)
+                        if low[j] < low[i] then low[i] = low[j] end
+                        if parent and low[j] >= disc[i] then cut[i] = true end
+                    elseif j ~= parent and disc[j] < low[i] then
+                        low[i] = disc[j]
+                    end
                 end
             end
+            if not parent and children > 1 then cut[i] = true end
         end
-        local total = 0
-        for r = 1, n do
-            for c = 1, n do
-                if cell_island[r][c] == 0 and not (r == er and c == ec) then
-                    total = total + 1
-                end
+        local comps = {}   -- { first cell, size } per black component
+        for r = 1, n do for c = 1, n do
+            local i = (r - 1) * n + c
+            if cell_island[r][c] == 0 and disc[i] == 0 then
+                local before = timer
+                dfs(i, nil)
+                comps[#comps + 1] = { i, timer - before }
+            end
+        end end
+        if #comps == 1 then
+            for i = 1, n * n do
+                if disc[i] > 0 and not cut[i] then removable[i] = true end
+            end
+        elseif #comps == 2 then
+            -- only a lone cell can go, leaving the other component whole
+            for _, comp in ipairs(comps) do
+                if comp[2] == 1 then removable[comp[1]] = true end
             end
         end
-        return count == total
+        return removable
     end
 
+    local black_changed = true
     local growing = true
     while growing do
         growing = false
@@ -319,6 +458,8 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
             local island = islands[id]
             if #island.cells < island.target then
                 local candidates = {}
+                if black_changed then blackRemovable(); black_changed = false end
+                local can_remove = removable
                 for _, cell in ipairs(island.cells) do
                     for _, d in ipairs(DIRS) do
                         local nr, nc = cell[1]+d[1], cell[2]+d[2]
@@ -331,7 +472,7 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
                                     if v ~= 0 and v ~= id then ok = false; break end
                                 end
                             end
-                            if ok and blackConnectedWithout(nr, nc) then
+                            if ok and can_remove[(nr - 1) * n + nc] then
                                 candidates[#candidates+1] = {nr, nc}
                             end
                         end
@@ -342,6 +483,7 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
                     cell_island[pick[1]][pick[2]] = id
                     island.cells[#island.cells+1] = pick
                     growing = true
+                    black_changed = true
                 end
             end
         end
@@ -364,7 +506,8 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
                 local block_cells = { {r,c}, {r,c+1}, {r+1,c}, {r+1,c+1} }
                 for _, pos in ipairs(block_cells) do
                     local pr, pc = pos[1], pos[2]
-                    if blackConnectedWithout(pr, pc) then
+                    if black_changed then blackRemovable(); black_changed = false end
+                    if removable[(pr - 1) * n + pc] then
                         local adj_id, conflict = nil, false
                         for _, d in ipairs(DIRS) do
                             local nr, nc = pr+d[1], pc+d[2]
@@ -374,6 +517,7 @@ local function tryGenerate(n, num_islands, min_sz, max_sz)
                             end
                         end
                         if not conflict then
+                            black_changed = true
                             if adj_id then
                                 cell_island[pr][pc] = adj_id
                                 local isl = islands[adj_id]
@@ -440,26 +584,27 @@ end
 -- every island's size is fully revealed (see
 -- docs/generator_robustness_audit.md's Tier 2 table).
 --
--- Budget/attempts scale down for larger n: at n=5, most attempts are
--- proven unique almost instantly. At n=10+, with several islands needing
--- simultaneous growth, proving uniqueness is usually computationally
--- infeasible within any budget that keeps generation fast -- empirically,
--- 0/5 trials found a proven-unique layout in 150 attempts x 20k nodes at
--- n=10. Burning the full n=5 budget there would cost ~15-60s per
--- generation for no better odds, so this trades a lower (but nonzero)
--- chance of a *proven* puzzle at large n for bounded, fast generation --
--- the graceful fallback below (prefer the best structurally-valid layout
--- found) means large-n puzzles are exactly as reliable as before this fix,
--- never worse, just not provably unique yet. See
--- spec/solvability_audits/nurikabe_solvability_check.lua for the measured
--- per-size hit rate.
+-- Budget: attempts, search nodes per uniqueness check, and search nodes
+-- for the whole generate() call (counted in nodes, never time, so a seed
+-- gives the same puzzle on every device). At n=5 a candidate is settled in
+-- a few hundred nodes at most, so ~1 in 3 attempts is proven unique within
+-- a handful of tries. At n=10+, with many islands growing at once, most
+-- candidates have several solutions and a unique one is rare (and can take
+-- 10k+ nodes to prove), so the total is capped and generation falls back
+-- to the first structurally valid layout -- exactly what large grids got
+-- before 1.5.0, whose (over-counting) check never proved one unique there
+-- anyway, after up to 0.5 s of searching (seconds on an e-reader).
+-- See spec/solvability_audits/nurikabe_solvability_check.lua for the
+-- measured per-size hit rate.
 local function uniquenessBudgetFor(n)
-    if n <= 6 then return 400, 300000 end
-    if n <= 10 then return 30, 20000 end
-    return 15, 10000
+    if n <= 6 then return 400, 2000, 20000 end
+    if n <= 10 then return 30, 600, 1500 end
+    return 15, 300, 600
 end
 
-function NurikabeBoard:generate(difficulty)
+-- on_progress(fraction), optional: called after every attempt (screen.lua
+-- wires it to the shared "Generating puzzle…" bar).
+function NurikabeBoard:generate(difficulty, on_progress)
     self.difficulty      = difficulty or self.difficulty
     self.reveal_solution = false
     self.undo:clear()
@@ -467,7 +612,8 @@ function NurikabeBoard:generate(difficulty)
     local n   = self.n
     local cfg = DIFF_CONFIG[self.difficulty] or DIFF_CONFIG.easy
     local num_islands = math.max(2, math.floor(n*n * cfg[1] / 100))
-    local max_attempts, node_budget = uniquenessBudgetFor(n)
+    local max_attempts, node_budget, nodes_left = uniquenessBudgetFor(n)
+    local nodes_total = nodes_left
 
     local clues, solution_black
     local best_clues, best_black
@@ -475,13 +621,19 @@ function NurikabeBoard:generate(difficulty)
         local candidate_clues, candidate_black = tryGenerate(n, num_islands, cfg[2], cfg[3])
         if candidate_clues then
             if not best_clues then best_clues, best_black = candidate_clues, candidate_black end
-            local solutions, exhausted = countSolutions(candidate_clues, n, 2, node_budget)
+            local solutions, exhausted, used = countSolutions(candidate_clues, n, 2,
+                math.min(node_budget, nodes_left))
             if not exhausted and solutions == 1 then
                 clues, solution_black = candidate_clues, candidate_black
                 break
             end
+            nodes_left = nodes_left - used
+            if nodes_left <= 0 then break end
         end
         if attempt % 30 == 0 and num_islands > 2 then num_islands = num_islands - 1 end
+        if on_progress then
+            on_progress(math.max(attempt / max_attempts, 1 - nodes_left / nodes_total))
+        end
     end
 
     if not clues then
@@ -727,5 +879,8 @@ end
 NurikabeBoard.STATE_UNKNOWN = STATE_UNKNOWN
 NurikabeBoard.STATE_BLACK   = STATE_BLACK
 NurikabeBoard.STATE_WHITE   = STATE_WHITE
+
+-- exposed for the specs
+NurikabeBoard.countSolutions = countSolutions
 
 return NurikabeBoard

@@ -265,4 +265,52 @@ describe("NurikabeBoard", function()
             assert.is_false(b:load({}))
         end)
     end)
+    describe("uniqueness check (1.5.0)", function()
+        it("counts each island shape once, whatever order it grows in", function()
+            -- 2x2, a 3 in a corner: the island is any 3 cells holding it
+            -- (3 shapes); the old search also counted the L through both
+            -- neighbours twice, once per growth order.
+            local clues = { { 3, 0 }, { 0, 0 } }
+            local solutions, exhausted = Board.countSolutions(clues, 2, 100, 1e6)
+            assert.is_false(exhausted)
+            assert.are.equal(3, solutions)
+            assert.are.equal(2, (Board.countSolutions({ { 2, 0 }, { 0, 0 } }, 2, 100, 1e6)))
+            assert.are.equal(1, (Board.countSolutions({ { 1, 0 }, { 0, 0 } }, 2, 100, 1e6)))
+        end)
+
+        it("5x5 puzzles are proven unique, and generation stays fast", function()
+            for _, n in ipairs({ 5, 10, 15 }) do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local worst = 0
+                    for seed = 1, 6 do
+                        math.randomseed(seed * 7919 + n)
+                        local t0 = os.clock()
+                        local b = Board:new{ n = n }
+                        b:generate(diff)
+                        worst = math.max(worst, os.clock() - t0)
+                        if n == 5 then
+                            local solutions, exhausted = Board.countSolutions(b.clues, n, 2, 1e6)
+                            assert.is_false(exhausted)
+                            assert.are.equal(1, solutions,
+                                ("n=%d diff=%s seed=%d: not unique"):format(n, diff, seed))
+                        end
+                    end
+                    -- under 0.1 s on a desktop (up to 1.8 s before 1.5.0);
+                    -- generous for slow CI.
+                    assert.is_true(worst < 1.5, ("n=%d diff=%s took %.2fs"):format(n, diff, worst))
+                end
+            end
+        end)
+
+        it("reports progress while generating", function()
+            local calls, last = 0, 0
+            math.randomseed(3)
+            Board:new{ n = 10 }:generate("easy", function(f)
+                calls = calls + 1
+                assert.is_true(f >= last and f <= 1)
+                last = f
+            end)
+            assert.is_true(calls > 0)
+        end)
+    end)
 end)
