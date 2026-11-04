@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-04
+
+### Fixed
+- 15×15 Hard always gave a "puzzle" that was one big island covering the
+  whole grid, and 10×10 Hard and 15×15 Medium sometimes did too. Every size
+  and difficulty now gives a real Nurikabe: many islands, a connected river,
+  no 2×2 river block.
+- Most 10×10 and 15×15 puzzles were not checked to have a single solution.
+  Every puzzle now has exactly one solution and can be solved by deduction
+  alone, without guessing.
+
+### Changed
+- New puzzle generator: puzzles are built so that they can be solved step
+  by step, and the difficulty now sets how deep that reasoning goes. Easy
+  needs only the basic rules; Medium also needs to keep the river connected
+  and to work out how an island one or two cells short can end; Hard needs
+  that for bigger islands too, with islands of up to 9 cells. Puzzles
+  therefore differ from 1.5.0 for the same seed (Daily Challenge included).
+- Generation takes at most about 0.04 s on a desktop (about a second on a
+  Kobo) at every size; the "Generating puzzle…" bar covers the wait.
+
 ## [1.5.0] - 2026-11-04
 
 ### Changed

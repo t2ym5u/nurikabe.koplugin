@@ -54,16 +54,19 @@ to create a "river" (connected sea of black cells) and isolated "islands"
 Binary black/white cell states are perfectly matched to e-ink display
 characteristics. No animation or colour is required.
 
-## Known limitations
+## Puzzle generation
 
-At 5×5, every generated puzzle is verified to have exactly one solution.
-At 10×10 and 15×15, proving uniqueness for certain is often too
-computationally expensive within generation's time budget, since several
-islands are usually growing at once. Generation still tries to prove
-uniqueness first and only falls back when it can't within that budget, so
-a small fraction of puzzles at those sizes may ship without a proven
-unique solution (still fully valid and completable, just not guaranteed
-to be the only possible tiling of the clues).
+Every puzzle, at every size and difficulty, has exactly one solution and can
+be solved by deduction alone, without guessing. The difficulty sets the
+deepest reasoning a puzzle needs:
+
+- **Easy** — the basic rules: cells next to two islands or a finished
+  island are river, the last free cell of a 2×2 river block is island, an
+  island or a piece of river with only one way out takes it, cells no
+  island can reach are river.
+- **Medium** — also cells the river must pass through to stay connected,
+  and the ways an island one or two cells short can end.
+- **Hard** — the ways a bigger island can end; islands up to 9 cells.
 
 ## License
 
